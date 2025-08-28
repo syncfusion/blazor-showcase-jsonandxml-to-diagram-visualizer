@@ -1,0 +1,10 @@
+/Common/bin
+/webapp/server/JsonAndXmlToDiagramVisualizer/bin
+/Common/obj
+/webapp/server/JsonAndXmlToDiagramVisualizer/obj
+/webapp/server/JsonAndXmlToDiagramVisualizer/.vs
+/webapp/wasm/.vs
+/webapp/wasm/JsonAndXmlToDiagramVisualizer.Client/bin
+/webapp/wasm/JsonAndXmlToDiagramVisualizer.Client/obj
+/webapp/wasm/JsonAndXmlToDiagramVisualizer/bin
+/webapp/wasm/JsonAndXmlToDiagramVisualizer/obj

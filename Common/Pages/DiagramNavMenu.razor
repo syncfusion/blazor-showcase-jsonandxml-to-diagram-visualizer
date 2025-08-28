@@ -1,0 +1,179 @@
+@using Syncfusion.Blazor.Navigations
+@using Syncfusion.Blazor.SplitButtons
+@using Syncfusion.Blazor.DropDowns
+@using JsonAndXmlToDiagramVisualizer.Shared
+@inject ThemeService ThemeService
+
+@namespace JsonAndXmlToDiagramVisualizer
+
+<div class="navbar-toolbar-container @(ThemeService.CurrentTheme == "dark" ? "navbar-dark" : "navbar-light")" style="padding: 2px 16px; display: flex; align-items: center;">
+    <div class="navbar-title" style="font-size: 18px; font-weight: bold; display: flex; align-items: center;">
+        <span class="sf-icon-Code"></span>
+        <span class="logo-section">
+            <img src="logo.svg" class="logo" alt="Logo" />
+            <span class="text">@EditorType To Diagram</span>
+        </span>
+        <SfToolbar>
+            <ToolbarItems>
+                <ToolbarItem>
+                    <Template>
+                        <SfDropDownButton CssClass="e-menu-btn" Content="File">
+                            <DropDownMenuItems>
+                                <DropDownMenuItem Text="Import" IconCss="e-icons e-import" Id="import" />
+                                <DropDownMenuItem Text="Export" IconCss="e-icons e-export" Id="export" />
+                            </DropDownMenuItems>
+                            <DropDownButtonEvents ItemSelected="OnMenuItemClick" />
+                        </SfDropDownButton>
+                    </Template>
+                </ToolbarItem>
+
+                <ToolbarItem>
+                    <Template>
+                        <SfDropDownButton CssClass="e-menu-btn" Content="View">
+                            <DropDownMenuItems>
+                                <DropDownMenuItem Text="Show Grid" IconCss="@GetIconForView("toggle-grid")" Id="toggle-grid" />
+                                <DropDownMenuItem Text="Item Count" IconCss="@GetIconForView("toggle-count")" Id="toggle-count" />
+                                <DropDownMenuItem Text="Show Expand/Collapse Icon" IconCss="@GetIconForView("toggle-expand")" Id="toggle-expand" />
+                            </DropDownMenuItems>
+                            <DropDownButtonEvents ItemSelected="OnMenuItemClick" />
+                        </SfDropDownButton>
+                    </Template>
+                </ToolbarItem>
+
+                <ToolbarItem>
+                    <Template>
+                        <SfDropDownButton CssClass="e-menu-btn" Content="Theme">
+                            <DropDownMenuItems>
+                                <DropDownMenuItem Text="Light" IconCss="@GetIconForTheme("light")" Id="light" />
+                                <DropDownMenuItem Text="Dark" IconCss="@GetIconForTheme("dark")" Id="dark" />
+                            </DropDownMenuItems>
+                            <DropDownButtonEvents ItemSelected="OnMenuItemClick" />
+                        </SfDropDownButton>
+                    </Template>
+                </ToolbarItem>
+            </ToolbarItems>
+        </SfToolbar>
+    </div>
+
+
+    <SfDropDownList CssClass="select-dropdown" TValue="string" TItem="string" DataSource="@Formats" @bind-Value="@SelectedFormat" Width="70px">
+        <DropDownListEvents TValue="string" TItem="string" ValueChange="OnFormatChange" />
+    </SfDropDownList>
+</div>
+
+@code {
+    [Parameter] public EventCallback<string> OnNavMenuAction { get; set; }
+    [Parameter] public string EditorType { get; set; } = "JSON";
+
+    private HashSet<string> ToggledViewItems = new() { "toggle-grid", "toggle-count", "toggle-expand" };
+    private string SelectedTheme = "light";
+    private ThemeSettings Settings;
+    private string CurrentTheme = "light";
+    private List<string> Formats = new List<string> { "JSON", "XML" };
+    private string SelectedFormat = "JSON";
+
+    protected override void OnInitialized()
+    {
+        ThemeService.OnThemeChanged += HandleThemeChanged;
+        CurrentTheme = ThemeService.CurrentTheme;
+        Settings = ThemeService.CurrentThemeSettings;
+    }
+    private void HandleThemeChanged()
+    {
+        CurrentTheme = ThemeService.CurrentTheme;
+        Settings = ThemeService.CurrentThemeSettings;
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnMenuItemClick(MenuEventArgs args)
+    {
+        if (string.IsNullOrWhiteSpace(args.Item.Id))
+            return;
+
+        // Toggle View Items
+        if (args.Item.Id.StartsWith("toggle-"))
+        {
+            if (ToggledViewItems.Contains(args.Item.Id))
+                ToggledViewItems.Remove(args.Item.Id);
+            else
+                ToggledViewItems.Add(args.Item.Id);
+        }
+
+        // Switch Theme
+        if (args.Item.Id.StartsWith("light") || args.Item.Id.StartsWith("dark"))
+        {
+            SelectedTheme = args.Item.Id;
+        }
+
+        await OnNavMenuAction.InvokeAsync(args.Item.Id);
+    }
+
+    private async Task OnFormatChange(ChangeEventArgs<string, string> args)
+    {
+        await OnNavMenuAction.InvokeAsync(args.Value);
+    }
+
+    private string GetIconForView(string id) => ToggledViewItems.Contains(id) ? "e-icons e-check" : "";
+    private string GetIconForTheme(string id) => SelectedTheme == id ? "e-icons e-check" : "";
+
+}
+
+<style>
+    .logo-section {
+        display: flex;
+        align-items: center;
+        width: 265px;
+        font-weight: 600;
+        font-size: 1.125rem;
+    }
+    .logo{
+        width: 2.3rem; 
+        vertical-align: middle; 
+        margin-right: 3px;
+    }
+    .navbar-light {
+        color: #212121;
+        background-color: rgb(236, 236, 236);
+        border-bottom: 1px solid rgb(77, 77, 77, 0.2);
+    }
+
+    .navbar-dark {
+        color: rgb(236, 236, 236);
+        background-color: #2c2c2c;
+        border-bottom: #444;
+    }
+    .navbar-dark .logo{
+        filter: brightness(0) invert(1);
+    }
+
+    .navbar-toolbar-container .e-toolbar, .navbar-toolbar-container .e-toolbar .e-btn {
+        border: 0;
+        background-color: transparent;
+        box-shadow: none;
+    }
+
+    .navbar button {
+        background-color: transparent;
+        min-width: 72px;
+        font-size: 0.875rem;
+        background-color: transparent !important;
+        border: 0;
+        box-shadow: none !important;
+    }
+    
+    .navbar-toolbar-container .e-toolbar .e-btn:hover{
+        background: rgba(184, 184, 184, 0.657)
+    }
+
+    .navbar-toolbar-container .e-toolbar .e-toolbar-items {
+        background-color: transparent;
+    }
+
+    .select-dropdown {
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        width: 90px !important;
+    }
+</style>

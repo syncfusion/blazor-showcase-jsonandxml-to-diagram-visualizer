@@ -1,0 +1,135 @@
+﻿@using Syncfusion.Blazor.Navigations
+@using Syncfusion.Blazor.Buttons
+@using Syncfusion.Blazor.SplitButtons
+@using Syncfusion.Blazor.DropDowns
+@using Syncfusion.Blazor.Inputs
+@using Syncfusion.Blazor.Navigations
+@using JsonAndXmlToDiagramVisualizer.Shared
+@inject ThemeService ThemeService
+@inject IJSRuntime JS
+
+@namespace JsonAndXmlToDiagramVisualizer
+
+<div class="toolbar-container @(ThemeService.CurrentTheme)">
+    <SfToolbar CssClass="toolbar-buttons">
+        <ToolbarItems>
+            <ToolbarItem PrefixIcon="e-icons e-reset" CssClass="e-flat toolbar-btn" OnClick="@(e => OnToolClick("reset"))" TooltipText="Reset Zoom"></ToolbarItem>
+            <ToolbarItem PrefixIcon="e-icons e-zoom-to-fit" CssClass="e-flat toolbar-btn" OnClick="@(e => OnToolClick("fitToPage"))" TooltipText="Fit To Page"></ToolbarItem>
+            <ToolbarItem PrefixIcon="e-icons e-zoom-in" CssClass="e-flat toolbar-btn" OnClick="@(e => OnToolClick("zoomIn"))" TooltipText="Zoom In"></ToolbarItem>
+            <ToolbarItem PrefixIcon="e-icons e-zoom-out" CssClass="e-flat toolbar-btn" OnClick="@(e => OnToolClick("zoomOut"))" TooltipText="Zoom Out"></ToolbarItem>
+        </ToolbarItems>
+    </SfToolbar>
+    <div class="search-bar-container">
+        <SfTextBox @ref="TextBoxDropDownObj" Placeholder="Search Node"
+        CssClass="toolbar-search no-focus-outline remove-hover-effect"
+        Created="@AddSearchIcon" Input="OnSearchInput">
+        </SfTextBox>
+    </div>
+</div>
+
+@code {
+    SfTextBox TextBoxDropDownObj { get; set; }
+    [Parameter] public EventCallback<string> OnToolBarAction { get; set; }
+
+    private void OnToolClick(string action)
+    {
+        OnToolBarAction.InvokeAsync(action);
+    }
+
+    private void OnSearchInput(InputEventArgs args)
+    {
+        var searchText = args?.Value?.ToString()?.Trim() ?? "";
+        OnToolBarAction.InvokeAsync(searchText);
+    }
+
+    private async void AddSearchIcon()
+    {
+        if (TextBoxDropDownObj != null)
+        {
+            await TextBoxDropDownObj.AddIconAsync("prepend", "e-icons e-search search-icon");
+            // Create and append counter element to the input group
+            await JS.InvokeVoidAsync("eval", @"
+            const searchResultCounter = document.createElement('span');
+            searchResultCounter.style.fontSize = '.75rem';
+            searchResultCounter.className = 'e-input-group-icon counter-icon search-counter';
+            searchResultCounter.style.display = 'none';
+            searchResultCounter.textContent = '0 / 0';
+            document.querySelector('.search-bar-container .e-input-group').appendChild(searchResultCounter);
+        ");
+        }
+    }
+
+    public async Task ClearSearch()
+    {
+        if (TextBoxDropDownObj != null)
+        {
+            TextBoxDropDownObj.Value = "";
+        }
+    }
+
+    public async Task UpdateSearchCounter(int current, int total, bool showCounter)
+    {
+        if (showCounter)
+        {
+                await JS.InvokeVoidAsync("eval", $"document.querySelector('.search-bar-container .search-counter').textContent = '{current} / {total}';");
+                await JS.InvokeVoidAsync("eval", $"document.querySelector('.search-bar-container .search-counter').style.display = 'flex';");
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("eval", $"document.querySelector('.search-bar-container .search-counter').style.display = 'none';");
+        }            
+    }
+}
+
+<style>
+    .toolbar-container {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        display: flex;
+        align-items: center;
+        border-radius: 3px;
+    }
+    
+    .toolbar-container .e-toolbar {
+        border: 0;
+        background: none;
+    }
+
+    .toolbar-container.light .e-toolbar .e-toolbar-item .e-tbar-btn {
+        background: #343A401A !important;
+    }
+    
+    .toolbar-container .e-toolbar .e-toolbar-items {
+        margin: 0;
+        padding: 0;
+        background: transparent !important;
+    }
+
+    .toolbar-search {
+        flex: 1;
+        margin-left: 10px;
+        width: 12rem !important;
+    }
+
+    .toolbar-search.e-input-group .e-input {
+        padding-left: 4px !important;
+    }
+
+    .search-bar-container {
+        display: flex;
+        align-items: center;
+    }
+
+    .search-counter {
+        right: 8px;
+        font-size: 0.75rem;
+        color: #666;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        z-index: 10;
+    }
+    
+</style>
