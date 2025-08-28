@@ -1,0 +1,1222 @@
+using Microsoft.JSInterop;
+using Syncfusion.Blazor.Diagram;
+using BlazorMonaco.Editor;
+using Microsoft.AspNetCore.Components.Web;
+using System.Xml.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using JsonAndXmlToDiagramVisualizer.Shared;
+
+namespace JsonAndXmlToDiagramVisualizer;
+
+public partial class DiagramMain
+{
+    #region fields
+
+    private string editorPanelWidthPx = "300px";
+    private bool resizing = false;
+    private double startX = 0;
+    private double startWidth = 300;
+    private double windowWidth;
+
+    private BlazorMonaco.Editor.StandaloneCodeEditor monacoEditor;
+    private string editorContent = "";
+    private EditorInputType currentEditorInputType = EditorInputType.json;
+
+    private SfDiagramComponent diagram;
+    private ScrollLimitMode scrollLimit { get; set; } = ScrollLimitMode.Infinity;
+    private DiagramObjectCollection<NodeBase> nodeBase = new DiagramObjectCollection<NodeBase>();
+    private DiagramData diagramData = new DiagramData();
+    private SnapConstraints snapConstraints = SnapConstraints.ShowLines;
+    private bool showChildCount = true;
+    private bool showExpandCollapseIcon = true;
+    private LayoutOrientation[] orientationsList =
+    {
+        LayoutOrientation.LeftToRight,
+        LayoutOrientation.TopToBottom,
+        LayoutOrientation.RightToLeft,
+        LayoutOrientation.BottomToTop
+    };
+    private int currentOrientationIndex = 0;
+    private LayoutOrientation layoutOrientation = LayoutOrientation.LeftToRight;
+
+    private double expandCollapseIconWidth = 36;
+    private int nodeCornerRadius = 2;
+    private double minNodeWidth = 50;
+
+    private DiagramNodeDetailsDialog nodeDetailsDialog;
+
+    private DiagramToolBar toolBar;
+
+    private List<Node> searchMatches = new List<Node>();
+    private int currentMatchIndex = 0;
+    private string currentSearchQuery = "";
+    private bool isSearchPerformed = false;
+
+    private int nodeCount => diagramData.Nodes.Count;
+    private bool isInputValidStatus = true;
+    private bool isGraphCollapsed = false;
+    private DiagramExportDialog exportDialog;
+
+    private bool showSpinner = true;
+    private bool isUpdateDiagram = false;
+    private bool preventRendering = false;
+    private bool initializeDiagram = false;
+    private bool XmlJSONTypeChange = false;
+    private bool isJsonImporting = false;
+    private bool enableNodeCreating = false;
+
+    private Timer? debounceTimer;
+    private readonly int debounceDelayMs = 200;
+    #endregion
+
+    #region Splitter
+
+    private async Task OnSplitterMouseDown(MouseEventArgs e)
+    {
+        resizing = true;
+        startX = e.ClientX;
+        if (double.TryParse(editorPanelWidthPx.Replace("px", ""), out double w))
+        {
+            startWidth = w;
+        }
+        await JS.InvokeVoidAsync("attachResizeEvents", DotNetObjectReference.Create(this));
+        windowWidth = await JS.InvokeAsync<double>("getWindowWidth");
+    }
+
+    [JSInvokable]
+    public void OnMouseMove(double clientX)
+    {
+        if (resizing)
+        {
+            double newWidth = startWidth + (clientX - startX);
+            double maxWidth = windowWidth * 0.4; // e.g. max 40% of window
+            double minWidth = 150;
+            if (newWidth > maxWidth)
+            {
+                newWidth = maxWidth;
+            }
+            if (newWidth < minWidth)
+            {
+                newWidth = minWidth;
+            }
+            editorPanelWidthPx = newWidth + "px";
+            InvokeAsync(StateHasChanged);
+        }
+
+    }
+
+    [JSInvokable]
+    public void OnMouseUp()
+    {
+        resizing = false;
+    }
+
+    #endregion
+
+    #region Monaco Editor
+
+    protected override void OnInitialized()
+    {
+        // Initialize the Monaco editor with a default JSON value.
+        editorContent = @"{
+  ""GeneralProfile"": {
+    ""entity"": {
+      ""name"": ""Community Resource Center"",
+      ""location"": {
+        ""city"": ""Springfield"",
+        ""state"": ""Illinois"",
+        ""country"": ""USA""
+      }
+    },
+    ""management"": {
+      ""head"": ""Jordan Lee"",
+      ""coordinator"": ""Alex Kim"",
+      ""support_team"": {
+        ""lead"": ""Taylor Morgan"",
+        ""event_deadline"": ""2025-08-15""
+      }
+    },
+    ""facilities"": {
+      ""information_hub"": {
+        ""name"": ""Public Access Library"",
+        ""resources_available"": 7500,
+        ""digital_access"": true
+      }
+    }
+  }
+}";
+
+        ThemeService.CurrentThemeSettings = new ThemeSettings("light");
+    }
+
+    private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _)
+    {
+        return new StandaloneEditorConstructionOptions
+        {
+            AutomaticLayout = true,
+            Language = "json",
+            Value = editorContent,
+            FormatOnPaste = true, 
+            Placeholder = "Start Typing...",
+            Minimap = new EditorMinimapOptions
+            {
+                Enabled = false
+            },
+            ScrollBeyondLastLine = false,
+            Scrollbar = new EditorScrollbarOptions
+            {
+                VerticalScrollbarSize = 5,
+                HorizontalScrollbarSize = 5,
+            },
+        };
+    }
+
+    private async Task OnEditorContentChange(ModelContentChangedEvent e)
+    {
+        // Cancel the previous timer if it exists
+        debounceTimer?.Dispose();
+
+        // Start a new timer
+        debounceTimer = new Timer(async _ => 
+        {
+            await InvokeAsync(async () =>
+            {
+                editorContent = await monacoEditor.GetValue();
+                if (string.IsNullOrEmpty(editorContent.Trim()))
+                {
+                    isInputValidStatus = true;
+                }
+                else
+                {
+                    isInputValidStatus = await IsEditorContentValidAsync();
+                    if (isInputValidStatus)
+                    {
+                        await ProcessEditorContentChange();
+                    }
+                    else
+                    {
+                        showSpinner = true;
+                    }
+                    StateHasChanged();
+                }
+            });
+        }, null, debounceDelayMs, Timeout.Infinite);
+    }
+
+    private async Task ProcessEditorContentChange()
+    {
+        try
+        {
+            diagram.BeginUpdate();
+            if (!XmlJSONTypeChange && !isJsonImporting)
+            {
+                await UpdateAnnotationsText();
+                await diagram.EndUpdateAsync();
+            }
+            if (!isUpdateDiagram && (!preventRendering || initializeDiagram))
+            {
+                diagram.BeginUpdate();
+                await ParseAndUpdateDiagram();
+            }
+            await diagram.DoLayoutAsync();
+            await diagram.EndUpdateAsync();
+            diagram.FitToPage(new FitOptions() { Mode = FitMode.Both, Region = DiagramRegion.Content, CanZoomIn = true });
+            isUpdateDiagram = false;
+            preventRendering = false;
+            XmlJSONTypeChange = false;
+            isJsonImporting = false;
+            showSpinner = false;
+            await ClearSearchBox();
+        }
+        catch
+        {
+            showSpinner = true;   
+        }
+    }
+
+    public void Dispose()
+    {
+        debounceTimer?.Dispose();
+    }
+
+    private async Task ClearSearchBox()
+    {
+        await toolBar.ClearSearch();
+        // boolean to check if search was performed or not, to avoid unncessary clearing of node styles
+        if (isSearchPerformed)
+        {
+            await SearchNodes("");
+            isSearchPerformed = false;
+        }
+    }
+
+    private async Task<bool> IsEditorContentValidAsync()
+    {
+        string editorContent = await monacoEditor.GetValue();
+
+        if (string.IsNullOrWhiteSpace(editorContent))
+            return false;
+
+        try
+        {
+            if (currentEditorInputType == EditorInputType.xml)
+            {
+                try
+                {
+                    // Try to parse as single-root XML
+                    XDocument.Parse(editorContent);
+                    return true;
+                }
+                catch
+                {
+                    try
+                    {
+                        // Try to parse as multi-root XML by wrapping with a root node
+                        var wrapped = $"<__root__>{editorContent}</__root__>";
+                        XDocument.Parse(wrapped);
+                        return true;
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+            }
+            else if (currentEditorInputType == EditorInputType.json)
+            {
+                // Attempt to parse the content as JSON
+                JToken.Parse(editorContent);
+            }
+            else
+            {
+                // Unsupported editor type
+                return false;
+            }
+
+            return true; // Parsing succeeded
+        }
+        catch
+        {
+            return false; // Parsing failed
+        }
+    }
+
+    #endregion
+
+    #region Diagram Component
+
+    private async Task OnCreated()
+    {
+        diagram.BeginUpdate();
+        await ParseAndUpdateDiagram();
+        await diagram.DoLayoutAsync();
+        diagram.FitToPage(new FitOptions() { Mode = FitMode.Both, Region = DiagramRegion.Content, CanZoomIn = true });
+        await diagram.EndUpdateAsync();
+
+        Service?.Update(new NotifyProperties() { HideSpinner = true });
+    }
+
+    private async Task OnNodeCreating(IDiagramObject obj)
+    {
+        if (enableNodeCreating)
+        {
+            await UpdateNodeDefaults(obj);
+        }
+    }
+
+    private async Task UpdateNodeDefaults(IDiagramObject obj)
+    {
+        if (obj is Node node)
+        {
+            node.Constraints = NodeConstraints.Default & ~NodeConstraints.Select;
+            node.Style = new ShapeStyle { Fill = ThemeService.CurrentThemeSettings.NodeFillColor, StrokeColor = ThemeService.CurrentThemeSettings.NodeStrokeColor, StrokeWidth = 1 };
+
+            if (node.ID == "main-root")
+            {
+                node.Width = 40;
+                node.Height = 40;
+                // if multi root node then ellipse shape
+                node.Shape = new BasicShape { Shape = NodeBasicShapes.Ellipse, Type = NodeShapes.Basic };
+            }
+            else
+            {
+                // if normal node then rectangle shape
+                node.Shape = new BasicShape { Shape = NodeBasicShapes.Rectangle, Type = NodeShapes.Basic, CornerRadius = nodeCornerRadius };
+
+                var additionalInfo = node?.AdditionalInfo;
+                if (additionalInfo != null
+                    && additionalInfo.TryGetValue("mergedContent", out var mergedContent)
+                    && additionalInfo.TryGetValue("isLeaf", out var isLeafObj)
+                    && bool.TryParse(isLeafObj?.ToString(), out bool isLeaf))
+                {
+                    var (width, height) = await GetNodeSizeAsync((string)mergedContent, isLeaf, minNodeWidth);
+                    node.Width = width;
+                    node.Height = height;
+                }
+
+                await PositionNodeAnnotations(node);
+
+                if (additionalInfo != null && !(bool)additionalInfo["isLeaf"] & showExpandCollapseIcon)
+                {
+                    CreateExpandCollapseIcon(node, isExpandIcon: true);
+                    CreateExpandCollapseIcon(node, isExpandIcon: false);
+                }
+                else
+                {
+                    node.ExpandIcon = null;
+                    node.CollapseIcon = null;
+                }
+            }
+            enableNodeCreating = false;
+        }
+    }
+
+    private void CreateExpandCollapseIcon(Node node, bool isExpandIcon)
+    {
+        if (isExpandIcon)
+        {
+            node.ExpandIcon = new DiagramExpandIcon()
+            {
+                Shape = DiagramExpandIcons.Template,
+                Width = expandCollapseIconWidth,
+                Height = node.Height ?? 50,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            UpdateExpandCollapseIconOffset(node.ExpandIcon);
+        }
+        else
+        {
+            node.CollapseIcon = new DiagramCollapseIcon()
+            {
+                Shape = DiagramCollapseIcons.Template,
+                Width = expandCollapseIconWidth,
+                Height = node.Height ?? 50,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            UpdateExpandCollapseIconOffset(node.CollapseIcon);
+        }
+    }
+
+    private void UpdateExpandCollapseIconOffset(DiagramIcon icon)
+    {
+        if (layoutOrientation == LayoutOrientation.LeftToRight || layoutOrientation == LayoutOrientation.RightToLeft)
+        {
+            icon.OffsetX = 0.5;
+            icon.OffsetY = 1;
+            if (layoutOrientation == LayoutOrientation.RightToLeft)
+            {
+                icon.OffsetX = 0.5;
+                icon.OffsetY = 0;
+            }
+        }
+        else if (layoutOrientation == LayoutOrientation.TopToBottom || layoutOrientation == LayoutOrientation.BottomToTop)
+        {
+            icon.OffsetX = 1;
+            icon.OffsetY = 0.5;
+        }
+    }
+
+    private void UpdateConnectorDefaults(IDiagramObject obj)
+    {
+        if (obj is Connector connector)
+        {
+            connector.Constraints = ConnectorConstraints.Default & ConnectorConstraints.Select;
+            UpdateConnectorStyle(connector);
+        }
+    }
+
+    private void UpdateConnectorStyle(Connector connector)
+    {
+        connector.Type = ConnectorSegmentType.Orthogonal;
+        connector.CornerRadius = 15;
+        connector.Style = new ShapeStyle { StrokeColor = ThemeService.CurrentThemeSettings.ConnectorStrokeColor, StrokeWidth = 2 };
+        connector.TargetDecorator = new DecoratorSettings
+        {
+            Shape = DecoratorShape.None
+        };
+    }
+
+    private async Task ParseAndUpdateDiagram()
+    {
+        showSpinner = true;
+        StateHasChanged();
+        try
+        {
+            // Retrieve raw editor content
+            var rawContent = await monacoEditor.GetValue();
+            string jsonContent;
+
+            if (currentEditorInputType == EditorInputType.xml)
+            {
+                // Convert XML input to JSON
+                var wrappedXml = $"<root>{rawContent}</root>";
+                var xmlDoc = System.Xml.Linq.XDocument.Parse(wrappedXml);
+                jsonContent = Newtonsoft.Json.JsonConvert.SerializeXNode(xmlDoc, Newtonsoft.Json.Formatting.Indented, omitRootObject: true);
+            }
+            else
+            {
+                jsonContent = rawContent;
+            }
+
+            // Parse using JSON diagram parser only
+            diagramData = JsonDiagramParser.ProcessData(jsonContent);
+
+            if (diagramData == null || (diagramData.Nodes.Count == 0 && diagramData.Connectors.Count == 0))
+            {
+                isInputValidStatus = false;
+                return;
+            }
+
+            isInputValidStatus = true;
+
+            diagram.Clear();
+            nodeBase.Clear();
+
+            foreach (var node in diagramData.Nodes)
+            {
+                await UpdateNodeDefaults(node);
+                nodeBase.Add(node!);
+            }
+            foreach (var connector in diagramData.Connectors)
+            {
+                UpdateConnectorDefaults(connector);
+                nodeBase.Add(connector);
+            }
+
+            await diagram.AddDiagramElementsAsync(nodeBase);
+            showSpinner = false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error parsing JSON: {ex.Message}");
+            showSpinner = true;
+        }
+    }
+    private async Task UpdateAnnotationsText()
+    {
+        try
+        {
+            var rawContent = await monacoEditor.GetValue();
+            string jsonContent;
+
+            if (currentEditorInputType == EditorInputType.xml)
+            {
+                // Convert XML input to JSON
+                var wrappedXml = $"<root>{rawContent}</root>";
+                var xmlDoc = System.Xml.Linq.XDocument.Parse(wrappedXml);
+                jsonContent = Newtonsoft.Json.JsonConvert.SerializeXNode(xmlDoc, Newtonsoft.Json.Formatting.Indented, omitRootObject: true);
+            }
+            else
+            {
+                jsonContent = rawContent;
+            }
+
+            diagramData = JsonDiagramParser.ProcessData(jsonContent);
+
+            if (diagramData == null || (diagramData.Nodes.Count == 0 && diagramData.Connectors.Count == 0))
+            {
+                isInputValidStatus = false;
+                return;
+            }
+
+            isInputValidStatus = true;
+
+            if (diagram.Nodes!.Count == diagramData.Nodes.Count)
+            {
+                foreach (var node in diagramData.Nodes)
+                {
+                    var existingNode = diagram.Nodes.FirstOrDefault(n => n.ID == node.ID);
+                    var additionalInfo = node?.AdditionalInfo;
+                    var nodeData = node?.Data;
+
+                    if (existingNode != null
+                        && existingNode.Annotations!.Count == node.Annotations!.Count
+                        && existingNode.Annotations.Select(a => a.ID).SequenceEqual(node.Annotations.Select(a => a.ID)))
+                    {
+                        bool update = false;
+                        preventRendering = true;
+                        foreach (var annotation in node.Annotations)
+                        {
+                            var existingAnnotation = existingNode.Annotations.FirstOrDefault(a => a.ID == annotation.ID);
+                            if (existingAnnotation != null)
+                            {
+                                if (existingAnnotation.Content!.ToString() != annotation.Content!.ToString())
+                                {
+                                    existingAnnotation.Content = annotation.Content;
+                                    if (additionalInfo != null
+                                        && additionalInfo.TryGetValue("mergedContent", out var mergedContent)
+                                        && additionalInfo.TryGetValue("isLeaf", out var isLeafObj)
+                                        && bool.TryParse(isLeafObj?.ToString(), out bool isLeaf))
+                                    {
+                                        var (width, height) = await GetNodeSizeAsync((string)mergedContent, isLeaf, minNodeWidth);
+                                        existingNode.Width = width;
+                                        existingNode.Height = height;
+                                        existingNode.AdditionalInfo = additionalInfo;
+                                        existingNode.Data = nodeData;
+                                    }
+                                    isUpdateDiagram = true;
+                                    update = true;
+                                }
+                            }
+                        }
+                        if (update)
+                        {
+                            await PositionNodeAnnotations(existingNode);
+                        }
+                    }
+                    else
+                        initializeDiagram = true;
+                }
+            }
+        }
+        catch
+        {
+            isInputValidStatus = false;
+        }
+    }
+
+    private async Task<(double width, double height)> GetNodeSizeAsync(string content, bool isLeaf, double minWidth)
+    {
+        double iconExtra = isLeaf ? 0 : expandCollapseIconWidth;
+
+        var result = await JS.InvokeAsync<Dictionary<string, double>>("getTextSize", content);
+
+        double width = result["width"] + iconExtra;
+
+        width = Math.Max(minWidth, width);  
+
+        return (width, result["height"]);
+    }
+
+    private string RemoveCountValue(string input)
+    {
+        // Regular expression to match contents within curly braces including the braces
+        string pattern = @"\{.*?\}";
+        // Replace the matched contents with an empty string
+        return System.Text.RegularExpressions.Regex.Replace(input, pattern, "").Trim();
+    }
+
+    private async Task PositionNodeAnnotations(Node node, bool isThemeChange = false)
+    {
+        int padding = 10;
+
+        if (node.Annotations == null || node.Annotations.Count == 0)
+            return;
+
+        bool isLeaf = node.AdditionalInfo != null && node.AdditionalInfo.ContainsKey("isLeaf") && (bool)node.AdditionalInfo["isLeaf"];
+
+        if (node.Annotations.Count >= 2 && !isLeaf)
+        {
+            var keyAnnotation = node.Annotations[0];
+            keyAnnotation.Style = new TextStyle
+                {
+                    Color = ThemeService.CurrentThemeSettings.TextKeyColor,
+                    TextAlign = TextAlign.Left,
+                    FontFamily = "Consolas"
+                };
+
+            var countAnnotation = node.Annotations[1];
+            countAnnotation.Style = new TextStyle
+                {
+                    Color = ThemeService.CurrentThemeSettings.TextValueColor,
+                    TextAlign = TextAlign.Right,
+                    FontFamily = "Consolas"
+                };
+
+            if (showChildCount)
+            {
+                // Show Count Annotation
+                countAnnotation.Visibility = true;
+
+                // Left-align the Key annotation
+                keyAnnotation.Offset = new DiagramPoint { X = 0, Y = 0.5 };
+                keyAnnotation.HorizontalAlignment = HorizontalAlignment.Left;
+                keyAnnotation.Margin = new DiagramThickness { Left = padding };
+
+                // Right-align the Count annotation
+                countAnnotation.Offset = new DiagramPoint { X = 1, Y = 0.5 };
+                countAnnotation.HorizontalAlignment = HorizontalAlignment.Right;
+                countAnnotation.Margin = new DiagramThickness
+                    {
+                        Right = (showExpandCollapseIcon ? expandCollapseIconWidth : 0) + padding
+                    };
+            }
+            else
+            {
+                // Hide Count Annotation
+                countAnnotation.Visibility = false;
+
+                // Center the Key annotation when showChildCount is false
+                keyAnnotation.Offset = new DiagramPoint { X = 0.5, Y = 0.5 };
+                keyAnnotation.HorizontalAlignment = HorizontalAlignment.Center;
+                keyAnnotation.Margin = new DiagramThickness
+                {
+                    Right = showExpandCollapseIcon ? padding: 0
+                };
+
+                // Update TextAlign to Center for better visual alignment
+                keyAnnotation.Style.TextAlign = TextAlign.Center;
+            }
+        }
+        else if (isLeaf)
+        {
+            await AdjustLeafNodeAnnotations(node, padding, isThemeChange);
+        }
+    }
+
+    private async Task AdjustLeafNodeAnnotations(Node node, int padding, bool isThemeChange)
+    {
+        double nodeWidth = node.Width ?? 100;
+        double keyMeasuredWidth = 0.0;
+        double totalLines = node?.Annotations?.Count(x => x.ID.StartsWith("Key")) ?? 1;
+        var spacingY = totalLines > 0 ? 1.0 / (totalLines + 1) : 0.5;
+        var currentLine = 1;
+        foreach (var annotation in node!.Annotations!)
+        {
+            var size = await JS.InvokeAsync<Dictionary<string, double>>("getTextSize", annotation.Content, "12px Consolas");
+            double contentWidth = size["width"];
+            string rawValue = annotation.Content?.ToString() ?? "";
+
+            double offsetY = currentLine * spacingY;
+
+            if (annotation.ID.StartsWith("Key"))
+            {
+                annotation.Offset = new DiagramPoint
+                {
+                    X = padding / nodeWidth,
+                    Y = offsetY
+                };
+                annotation.HorizontalAlignment = HorizontalAlignment.Left;
+                keyMeasuredWidth = contentWidth;
+            }
+            else
+            {
+                if (keyMeasuredWidth > 0)
+                {
+                    string displayValue = FormatDisplayValue(rawValue);
+                    annotation.Content = displayValue;
+                    annotation.Offset = new DiagramPoint
+                    {
+                        X = (keyMeasuredWidth) / nodeWidth,
+                        Y = offsetY
+                    };
+                    annotation.HorizontalAlignment = HorizontalAlignment.Left;
+                    keyMeasuredWidth = 0;
+                }
+                else
+                {
+                    annotation.Content = RemoveSurroundingQuotes(annotation.Content?.ToString() ?? "");
+                    annotation.Offset = new DiagramPoint { X = 0.5, Y = 0.5 };
+                }
+                currentLine++;
+            }
+
+            ApplyAnnotationStyle(annotation, rawValue);
+
+        }
+    }
+
+    private string DetermineValueStyle(string rawValue)
+    {
+        if (int.TryParse(rawValue, out _) || double.TryParse(rawValue, out _))
+        {
+            return ThemeService.CurrentThemeSettings.NumericColor;
+        }
+        else if (bool.TryParse(rawValue, out bool boolVal))
+        {
+            return boolVal ? ThemeService.CurrentThemeSettings.BooleanColor : "red";
+        }
+        return ThemeService.CurrentThemeSettings.TextValueColor;
+    }
+
+    private string FormatDisplayValue(string rawValue)
+    {
+        bool isString = !int.TryParse(rawValue, out _) && !double.TryParse(rawValue, out _) && !bool.TryParse(rawValue, out bool boolVal);
+
+        if (!isString)
+        {
+            if (bool.TryParse(rawValue, out boolVal))
+            {
+                return boolVal.ToString().ToLower();
+            }
+        }
+
+        if (isString && !string.IsNullOrWhiteSpace(rawValue))
+        {
+            if (rawValue.StartsWith("\"") && rawValue.EndsWith("\""))
+            {
+                return rawValue;
+            }
+            return $"\"{rawValue}\"";
+        }
+
+        return rawValue;
+    }
+
+    public string RemoveSurroundingQuotes(string input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return input;
+
+        if (input.StartsWith("\"") && input.EndsWith("\""))
+        {
+            return input.Substring(1, input.Length - 2);
+        }
+
+        return input;
+    }
+
+    private void ApplyAnnotationStyle(Annotation annotation, string rawValue)
+    {
+        string color;
+
+        if (annotation.ID.StartsWith("Key") || annotation.ID.StartsWith("Parent"))
+        {
+            color = ThemeService.CurrentThemeSettings.TextKeyColor;
+        }
+        else if (annotation.ID.StartsWith("Value"))
+        {
+            color = DetermineValueStyle(rawValue);
+        }
+        else // Handles "Count" and any other cases
+        {
+            color = ThemeService.CurrentThemeSettings.TextValueColor;
+        }
+
+        annotation.Style = new TextStyle
+        {
+            Color = color,
+            FontFamily = "Consolas"
+        };
+    }
+    #endregion
+
+    #region Popup Dialog
+
+    private void OnDiagramClick(ClickEventArgs args)
+    {
+        if (args.Element is Node node && node.Data != null && args.ActualObject != null)
+        {
+            var nodeData = node.Data.GetType().GetProperty("actualdata")?.GetValue(node.Data, null)?.ToString();
+            var path = node.Data.GetType().GetProperty("path")?.GetValue(node.Data, null)?.ToString();
+
+            if (!string.IsNullOrEmpty(nodeData) && !string.IsNullOrEmpty(path))
+            {
+                // Update the selected content and show popup
+                nodeDetailsDialog.Show(nodeData, path);
+            }
+        }
+    }
+
+    #endregion
+
+    #region Nav Menu Actions
+
+    private async Task HandleNavBarAction(string action)
+    {
+        switch (action)
+        {
+            case "import":
+            case "export":
+                await HandleImportExport(action);
+                break;
+            case "toggle-grid":
+                ToggleGridLines();
+                break;
+            case "toggle-count":
+                await ToggleItemCount();
+                break;
+            case "toggle-expand":
+                await ToggleExpandCollapseIcon();
+                break;
+            case "light":
+            case "dark":
+                await ToggleTheme(action);
+                break;
+            case "JSON":
+            case "XML":
+                await ToggleEditortype(action);
+                break;
+        }
+
+    }
+
+    private async Task HandleImportExport(string action)
+    {
+        try
+        {
+            var objRef = DotNetObjectReference.Create(this);
+
+            if (action == "import")
+            {
+                await JS.InvokeVoidAsync("importFile", objRef, currentEditorInputType.ToString());
+            }
+            else if (action == "export")
+            {
+                string exportData = editorContent ?? string.Empty;
+                string fileName = $"diagram.{currentEditorInputType.ToString()}";
+                await JS.InvokeVoidAsync("exportFile", exportData, fileName, currentEditorInputType.ToString());
+            }
+        }
+        catch (JSException ex)
+        {
+            Console.WriteLine($"{action} failed: {ex.Message}");
+        }
+    }
+
+    [JSInvokable]
+    public async Task ReceiveImportedFile(string importData)
+    {
+        // updating flags
+        isJsonImporting = true;
+
+        editorContent = importData;
+        await monacoEditor.SetValue(importData);
+    }
+
+    private void ToggleGridLines()
+    {
+        if (snapConstraints == SnapConstraints.ShowLines)
+            snapConstraints = SnapConstraints.None;
+        else
+            snapConstraints = SnapConstraints.ShowLines;
+    }
+
+    private async Task ToggleItemCount()
+    {
+        showChildCount = !showChildCount;
+        diagram.BeginUpdate();
+
+        // Update annotations without changing node sizes
+        foreach (var node in diagram.Nodes!)
+        {
+            if (node.AdditionalInfo != null && node.AdditionalInfo.ContainsKey("isLeaf"))
+            {
+                bool isLeaf = (bool)node.AdditionalInfo["isLeaf"];
+
+                if (!isLeaf && node.ID != "main-root")
+                {
+                    await PositionNodeAnnotations(node);
+                }
+            }
+        }
+
+        await diagram.EndUpdateAsync();
+    }
+
+    private async Task ToggleExpandCollapseIcon()
+    {
+        showExpandCollapseIcon = !showExpandCollapseIcon;
+        enableNodeCreating = true;
+        await diagram.RefreshDataSourceAsync();
+    }
+
+    private async Task ToggleTheme(string theme)
+    {
+        if (ThemeService.CurrentTheme == theme) return;
+
+        ThemeService.CurrentThemeSettings = new ThemeSettings(theme);
+
+        UpdateDiagramElements();
+        await JS.InvokeVoidAsync("setTheme", ThemeService.CurrentThemeSettings.CssUrl, ThemeService.CurrentThemeSettings.DiagramBackgroundColor);
+        await monacoEditor.UpdateOptions(new EditorUpdateOptions()
+        {
+            Theme = $"vs-{theme}"
+        });
+        ThemeService.SetTheme(theme, ThemeService.CurrentThemeSettings);
+        StateHasChanged();
+        await ClearSearchBox();
+    }
+
+    private void UpdateDiagramElements()
+    {
+        foreach (Node node in diagram.Nodes!)
+        {
+            if (node.Annotations != null || node.Annotations?.Count > 0)
+            {
+                foreach (var annotation in node.Annotations)
+                {
+                    string rawValue = annotation.Content?.ToString() ?? "";
+                    ApplyAnnotationStyle(annotation, rawValue);
+                }
+            }
+            node.Style!.StrokeColor = ThemeService.CurrentThemeSettings.NodeStrokeColor;
+            node.Style.Fill = ThemeService.CurrentThemeSettings.NodeFillColor;
+            node.Style.StrokeWidth = 1.5;
+        }
+
+        foreach (Connector connector in diagram.Connectors!)
+        {
+            connector.Style!.StrokeColor = ThemeService.CurrentThemeSettings.ConnectorStrokeColor;
+        }
+    }
+    private async Task ToggleEditortype(string selectedType)
+    {
+        isUpdateDiagram = false; preventRendering = false;
+        currentEditorInputType =
+            (EditorInputType)Enum.Parse(typeof(EditorInputType), selectedType, ignoreCase: true);
+
+
+        string editorContent = await monacoEditor.GetValue();
+        var model = await monacoEditor.GetModel();
+
+        string convertedContent = editorContent;
+
+        try
+        {
+            if (currentEditorInputType == EditorInputType.xml)
+            {
+                // Convert JSON → XML for display
+                var xNode = JsonConvert.DeserializeXNode(editorContent, "root");
+                if (xNode is XDocument xDoc && xDoc.Root != null)
+                {
+                    convertedContent = string.Join("\n\n", xDoc.Root.Elements().Select(el => el.ToString()));
+                }
+            }
+            else // Switching to JSON
+            {
+                // Convert XML → JSON for display
+                var wrappedXml = $"<root>{editorContent}</root>";
+                var xmlDoc = XDocument.Parse(wrappedXml);
+                convertedContent = JsonConvert.SerializeXNode(xmlDoc, Formatting.Indented, omitRootObject: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Editor type switch conversion failed: {ex.Message}");
+            isInputValidStatus = false;
+        }
+        XmlJSONTypeChange = true;
+        await BlazorMonaco.Editor.Global.SetModelLanguage(JS, model, currentEditorInputType.ToString());
+        await monacoEditor.SetValue(convertedContent);
+    }
+
+    #endregion
+
+    #region Hamburger Menu Actions
+
+    private async Task HandleHamburgerMenuAction(string action)
+    {
+        switch (action)
+        {
+            case "export-image":
+                exportDialog.Show();
+                break;
+            case "rotate-layout":
+                await RotateDiagramLayout();
+                break;
+            case "expand-graph":
+                ToggleGraphCollapse();
+                break;
+        }
+    }
+
+    private async Task HandleExportDiagramAsImage()
+    {
+        var fileName = exportDialog.FileName;
+        var format = exportDialog.ExportMode;
+        DiagramExportSettings exportSettings = new DiagramExportSettings()
+        {
+            Region = DiagramPrintExportRegion.PageSettings,
+        };
+        if (!string.IsNullOrWhiteSpace(fileName) && Enum.TryParse(typeof(DiagramExportFormat), format, out var result))
+        {
+            DiagramExportFormat exportFormat = (DiagramExportFormat)result;
+            await diagram.ExportAsync(fileName, exportFormat, exportSettings);
+            exportDialog.Hide();
+        }
+    }
+
+    private void ToggleGraphCollapse()
+    {
+        var nodes = diagram.Nodes;
+
+        if (isGraphCollapsed)
+        {
+            // Expand all nodes
+            foreach (var node in nodes!)
+            {
+                // Check if a node is already expanded
+                if (!node.IsExpanded)
+                {
+                    node.IsExpanded = true;
+                }
+            }
+            // After expanding, reflect the new state
+            isGraphCollapsed = false;
+        }
+        else
+        {
+            // Collapse only the root nodes
+            var rootNodes = nodes!.Where(node => node.InEdges!.Count == 0).ToList();
+            foreach (var node in rootNodes)
+            {
+                // Check if node doesn't have an expand icon or its shape is 'None'
+                if (node.ExpandIcon == null || node.ExpandIcon.Shape == DiagramExpandIcons.None)
+                {
+                    foreach (var edgeId in node.OutEdges!)
+                    {
+                        var connector = diagram.Connectors!.FirstOrDefault(c => c.ID == edgeId);
+                        if (connector != null)
+                        {
+                            var targetNode = nodes!.FirstOrDefault(n => n.ID == connector.TargetID);
+                            if (targetNode != null)
+                            {
+                                targetNode.IsExpanded = false;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    node.IsExpanded = false;
+                }
+            }
+            // After collapsing, reflect the new state
+            isGraphCollapsed = true;
+        }
+    }
+
+    private async Task RotateDiagramLayout()
+    {
+        // Cycle through the orientations
+        currentOrientationIndex = (currentOrientationIndex + 1) % orientationsList.Count();
+
+        layoutOrientation = orientationsList[currentOrientationIndex];
+        enableNodeCreating = true;
+        await diagram.RefreshDataSourceAsync();
+        diagram.FitToPage(new FitOptions() { Mode = FitMode.Both, Region = DiagramRegion.Content, CanZoomIn = true });
+    }
+
+    #endregion
+
+    #region Toolbar Actions
+
+    private async Task HandleToolBarAction(string action)
+    {
+        switch (action)
+        {
+            case "reset":
+                diagram.ResetZoom();
+                break;
+            case "fitToPage":
+                diagram.FitToPage(new FitOptions() { Mode = FitMode.Both, Region = DiagramRegion.Content, CanZoomIn = true });
+                break;
+            case "zoomIn":
+                diagram.Zoom(1.2, new DiagramPoint() { X = 100, Y = 100 });
+                break;
+            case "zoomOut":
+                diagram.Zoom(1 / 1.2, new DiagramPoint() { X = 100, Y = 100 });
+                break;
+            default:
+                await SearchNodes(action);
+                break;
+        }
+    }
+
+    private async Task SearchNodes(string searchText)
+    {
+        isSearchPerformed = true;
+        currentSearchQuery = searchText.Trim().ToLower();
+        searchMatches.Clear();
+        currentMatchIndex = 0;
+
+        // Remove existing keyboard listener
+        await JS.InvokeVoidAsync("removeSearchKeyboardListener");
+
+        // Reset all node styles first
+        await UpdateDefaultNodeStyles();
+
+        if (string.IsNullOrWhiteSpace(currentSearchQuery))
+        {
+            await toolBar.UpdateSearchCounter(0, 0, false);
+            return;
+        }
+
+        diagram.ResetZoom();
+
+        // Find matching nodes
+        foreach (var node in diagram.Nodes!)
+        {
+            string? nodeText = node.Data?.GetType().GetProperty("actualdata")?.GetValue(node.Data, null)?.ToString()?.ToLower();
+            if (!string.IsNullOrEmpty(nodeText) && nodeText.Contains(currentSearchQuery))
+            {
+                searchMatches.Add(node);
+            }
+        }
+
+        if (searchMatches.Any())
+        {
+            await HighlightCurrentMatch();
+            await toolBar.UpdateSearchCounter(currentMatchIndex + 1, searchMatches.Count, !string.IsNullOrWhiteSpace(currentSearchQuery));
+
+            // Add keyboard listener for Enter key navigation
+            await JS.InvokeVoidAsync("addSearchKeyboardListener", DotNetObjectReference.Create(this));
+        }
+        else
+        {
+            await toolBar.UpdateSearchCounter(0, 0, !string.IsNullOrWhiteSpace(currentSearchQuery));
+        }
+    }
+
+    private async Task HighlightCurrentMatch()
+    {
+        for (int i = 0; i < searchMatches.Count; i++)
+        {
+            var node = searchMatches[i];
+            string contentId = node.ID + "_content";
+
+            if (i == currentMatchIndex)
+            {
+                // Highlight current match
+                await SetNodeStyle(contentId,
+                    strokeColor: ThemeService.CurrentThemeSettings.HighlightStrokeColor ?? "#32CD32",
+                    fillColor: ThemeService.CurrentThemeSettings.HighlightFocusColor ?? "#90EE90",
+                    strokeWidth: "2");
+
+                // Center the current node in view
+                DiagramRect nodeBounds = new DiagramRect((node.OffsetX - (node.Width / 2)), node.OffsetY - (node.Height / 2), node.Width, node.Height);
+                diagram.BringIntoCenter(nodeBounds);
+            }
+            else
+            {
+                // Dim other matches
+                await SetNodeStyle(contentId,
+                    strokeColor: ThemeService.CurrentThemeSettings.HighlightStrokeColor ?? "#FFA500",
+                    fillColor: ThemeService.CurrentThemeSettings.HighlightFillColor ?? "#FFE4B5",
+                    strokeWidth: "1.5");
+            }
+        }
+    }
+
+    [JSInvokable]
+    public async Task HandleSearchKeyPress(string key)
+    {
+        if (key == "Enter" && searchMatches.Any())
+        {
+            currentMatchIndex = (currentMatchIndex + 1) % searchMatches.Count;
+            await HighlightCurrentMatch();
+            await toolBar.UpdateSearchCounter(currentMatchIndex + 1, searchMatches.Count, !string.IsNullOrWhiteSpace(currentSearchQuery));
+        }
+    }
+
+    private async Task SetNodeStyle(string domId, string strokeColor, string fillColor, string strokeWidth)
+    {
+        if (!string.IsNullOrEmpty(domId))
+        {
+            await JS.InvokeVoidAsync("setNodeStyle", domId, strokeColor, fillColor, strokeWidth);
+        }
+    }
+
+    private async Task UpdateDefaultNodeStyles()
+    {
+        foreach (var node in diagram.Nodes!)
+        {
+            string contentId = node.ID + "_content";
+            await SetNodeStyle(contentId, strokeColor: ThemeService.CurrentThemeSettings.NodeStrokeColor, ThemeService.CurrentThemeSettings.NodeFillColor, strokeWidth: "1.5");
+        }
+    }
+
+    #endregion
+}

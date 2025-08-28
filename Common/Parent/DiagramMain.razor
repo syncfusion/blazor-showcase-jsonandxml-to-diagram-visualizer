@@ -1,0 +1,244 @@
+﻿@using Syncfusion.Blazor.Diagram
+@using Syncfusion.Blazor.Buttons
+@inject IJSRuntime JS
+@inject HttpClient Http
+@inject ThemeService ThemeService
+@inherits SampleBaseComponent
+
+@namespace JsonAndXmlToDiagramVisualizer
+
+<div class="app-layout">
+    @* Top Navbar *@
+    <div class="navbar">
+        <DiagramNavMenu EditorType="@currentEditorInputType.ToString().ToUpper()" OnNavMenuAction="HandleNavBarAction" />
+    </div>
+
+    @* Main Area  *@
+    <div class="main-grid">
+        @* Editor Panel  *@
+        <div class="left-panel @(ThemeService.CurrentTheme)" style="width:@editorPanelWidthPx">
+            <StandaloneCodeEditor @ref="@monacoEditor"
+            CssClass="json-editor"
+            ConstructionOptions="EditorOptions"
+            OnDidChangeModelContent="OnEditorContentChange" />
+        </div>
+
+        @* Splitter *@
+        <div class="splitter @(ThemeService.CurrentTheme)" @onmousedown="OnSplitterMouseDown"></div>
+
+        @* Diagram Panel  *@
+        <div class="right-panel scroll-hide @(ThemeService.CurrentTheme)">
+
+            @* Hamburger Menu *@
+            <DiagramHamburgerMenu OnHamburgerMenuAction="HandleHamburgerMenuAction" IsGraphCollapsed="@isGraphCollapsed"/>
+
+            @* Loading Screen *@
+            <SfSpinner Visible="@showSpinner"></SfSpinner>
+
+            @* Diagram Control *@
+            <SfDiagramComponent @ref="diagram" EnableChunkMessages="true"
+            InteractionController="DiagramInteractions.ZoomPan | DiagramInteractions.SingleSelect"
+            Click="OnDiagramClick"
+            Width="100%" Height="100%"
+            Created="OnCreated"
+            NodeCreating="OnNodeCreating">
+                <ScrollSettings @bind-ScrollLimit="@scrollLimit"></ScrollSettings>
+                <Layout Type="LayoutType.HierarchicalTree"
+                SamePoint="false"
+                @bind-Orientation ="@layoutOrientation"
+                HorizontalSpacing="30"
+                VerticalSpacing="100" />
+                <SnapSettings @bind-Constraints ="@snapConstraints">
+                    <HorizontalGridLines @bind-LineColor="@ThemeService.CurrentThemeSettings.GridlinesColor"/>
+                    <VerticalGridLines @bind-LineColor="@ThemeService.CurrentThemeSettings.GridlinesColor"/>
+                </SnapSettings>
+                <DiagramTemplates>
+                    <DiagramExpandIconTemplate>
+                        @{
+                                <div style="height: 100%; width: 100%; background-color: @(ThemeService.CurrentThemeSettings.ExpandIconFillColor);border-radius: 0 @(nodeCornerRadius)px @(nodeCornerRadius)px 0; margin-top:-.033rem; display: flex; align-items: center; justify-content: center; box-sizing: border-box;">
+                                    <span style="color: @(ThemeService.CurrentThemeSettings.ExpandIconColor); font-size: 16px;">-</span>
+                                </div>
+                            }
+                        </DiagramExpandIconTemplate>
+                        <DiagramCollapseIconTemplate>
+                            @{
+                                <div style="height: 100%; width: 100%; background-color: @(ThemeService.CurrentThemeSettings.ExpandIconFillColor); border-radius: 0 @(nodeCornerRadius)px @(nodeCornerRadius)px 0; margin-top: -.033rem; display: flex; align-items: center; justify-content: center; box-sizing: border-box;">
+                                    <span style="color: @(ThemeService.CurrentThemeSettings.ExpandIconColor); font-size: 16px;">+</span>
+                                </div>
+                            }
+                        </DiagramCollapseIconTemplate>
+                    </DiagramTemplates>
+                </SfDiagramComponent>
+
+                @* Tool Bar Control *@
+                <DiagramToolBar @ref="toolBar" OnToolBarAction="HandleToolBarAction" />
+
+            </div>
+        </div>
+
+        @* Bottom Status Bar *@
+        <div class="bottom-bar @(ThemeService.CurrentTheme)">
+            <div class="bottom-bar-content @(ThemeService.CurrentTheme)">
+                <span class="status-message">
+                    @if (isInputValidStatus)
+                {
+                    <span>
+                        <Syncfusion.Blazor.Buttons.SfIcon IconCss="e-icons e-check status-icon" />
+                        Valid @(currentEditorInputType.ToString().ToUpper())
+                    </span>
+                }
+                else
+                {
+                    <span class="invalid-json">
+                        <Syncfusion.Blazor.Buttons.SfIcon IconCss="e-icons e-close status-icon" />
+                        Invalid @(currentEditorInputType.ToString().ToUpper())
+                    </span>
+                }
+            </span>
+            <span class="bottom-right">Nodes: @nodeCount</span>
+        </div>
+    </div>
+
+</div>
+
+@* Node Data Popup Dialog  *@
+<DiagramNodeDetailsDialog @ref="nodeDetailsDialog" />
+
+@* Export as Image Popup Dialog  *@
+<DiagramExportDialog @ref="exportDialog" OnExport="HandleExportDiagramAsImage" />
+
+<style>
+    html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family: Consolas,"Segoe UI", Tahoma, sans-serif;
+    }
+
+    .app-layout {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        height: 100vh;
+        width: 100vw;
+    }
+
+    /* Top Nav */
+    .navbar {
+        z-index: 10;
+    }
+
+    /* Main Grid */
+    .main-grid {
+        display: grid;
+        grid-template-columns: auto 6px 1fr;
+        overflow: hidden;
+    }
+
+    /* Editor */
+    .left-panel {
+        height: 100%;
+        overflow: hidden;
+    }
+    
+    .left-panel.dark {
+        background-color: #1e1e1e;
+    }
+
+    .json-editor {
+        height: 100%;
+    }
+
+    /* Splitter */
+    .splitter {
+        background-color: transparent;
+        cursor: col-resize;
+        height: 100%;
+    }
+
+    .splitter.dark {
+        background-color: #333;
+    }
+
+    /* Diagram */
+    .right-panel {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+    }
+    
+    .right-panel.dark {
+        background-color: #1e1e1e;
+    }
+
+    /* Bottom Bar */
+    .bottom-bar {
+        height: 24px;
+        background-color: rgb(236, 236, 236);
+        border-top: 1px solid #ccc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.74rem;
+    }
+
+    .bottom-bar-content {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        padding: 0 20px;
+        color: #333;
+        gap: 20px;
+    }
+
+    .bottom-bar-content.dark {
+        color: #eeee;
+    }
+    .bottom-right {
+        margin-left: auto;
+    }
+
+    .status-message {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .status-icon {
+        vertical-align: middle;
+        margin-right: -5px;
+        font-size: .95rem;
+    }
+
+    .invalid-json {
+        color: red;
+    }
+
+    .bottom-bar.dark {
+        background-color: #212121;
+        border-top: 1px solid rgb(77, 77, 77);
+    }
+
+    /* For WebKit-based browsers like Chrome and Safari */
+    ::-webkit-scrollbar {
+        width: 0px;
+        height: 0px;
+    }
+
+    /* To hide scrollbars but keep scroll function */
+    .scroll-hide {
+        overflow: scroll;
+        scrollbar-width: none; /* For Firefox */
+        -ms-overflow-style: none; /* For IE and Edge */
+    }
+
+    .scroll-hide::-webkit-scrollbar {
+        display: none; /* Hides scrollbar */
+    }
+
+    .e-diagram{
+        background-color: #F8F9FA;
+    }
+
+</style>
