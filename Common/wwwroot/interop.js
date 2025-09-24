@@ -47,6 +47,31 @@ window.getTextSize = (text, font) => {
     };
 };
 
+window.getTextSizesBatch = (texts, font) => {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    context.font = font || "12px Consolas";
+    const lineHeight = 20; // average line height in px
+    const verticalPadding = 18;
+    const horizontalPadding = 15;
+
+    const result = {};
+    for (let text of texts) {
+        const lines = (text || "").split("\n");
+        let maxWidth = 0;
+        for (let line of lines) {
+            const metrics = context.measureText(line);
+            if (metrics.width > maxWidth) {
+                maxWidth = metrics.width;
+            }
+        }
+        let width = maxWidth + horizontalPadding;
+        let height = (lines.length * lineHeight) + verticalPadding;
+        result[text] = { width: width, height: height };
+    }
+    return result;
+};
+
 window.exportFile = (data, filename, type) => {
     try {
         let mimeType = "text/plain";

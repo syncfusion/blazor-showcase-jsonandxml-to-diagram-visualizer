@@ -41,6 +41,7 @@
             Click="OnDiagramClick"
             Width="100%" Height="100%"
             Created="OnCreated"
+            PropertyChanged="OnPropertyChanged"
             NodeCreating="OnNodeCreating">
                 <ScrollSettings @bind-ScrollLimit="@scrollLimit"></ScrollSettings>
                 <Layout Type="LayoutType.HierarchicalTree"
