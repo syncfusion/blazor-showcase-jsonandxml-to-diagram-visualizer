@@ -19,7 +19,7 @@ node('AspComponent') {
             }
 
             stage('Build') {
-                blazor.runShell('npm run minify && gulp blazor-showcase-build --option ' + blazor.fetchTargetBranch());
+                blazor.runShell('gulp dynamic-import && npm run minify && gulp blazor-showcase-build --option ' + blazor.fetchTargetBranch());
             }
           
             stage('Publish') {

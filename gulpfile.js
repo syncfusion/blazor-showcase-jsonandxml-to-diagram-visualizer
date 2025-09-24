@@ -1,5 +1,5 @@
+//ImportHere
 var gulp = require("gulp");
-require("@syncfusion/ej2-staging");
 const fs = require('fs');
 const cleanCSS = require('gulp-clean-css');
 const rename = require('gulp-rename');
@@ -16,7 +16,6 @@ gulp.task('minify-js', function () {
     .pipe(gulp.dest('./'));
 });
 
-
 // CSS Minify Task
 gulp.task('minify-css', function () {
     return gulp.src(
@@ -27,3 +26,11 @@ gulp.task('minify-css', function () {
     .pipe(rename({ suffix: '.min' }))
     .pipe(gulp.dest('./'));
 });
+
+//replace placeholder with actual require statement
+gulp.task('dynamic-import', async function(){
+    var gulpfile = await fs.readFileSync('./gulpfile.js', 'utf-8');
+    gulpfile = gulpfile.replace('//ImportHere', 'require("@syncfusion/ej2-staging");');
+    await fs.writeFileSync('./gulpfile.js', gulpfile);
+});
+

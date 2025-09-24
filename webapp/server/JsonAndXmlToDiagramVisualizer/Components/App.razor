@@ -7,6 +7,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <!-- Google Tag Manager -->
+    <!-- Load GTM-P3WXFWCW immediately on page load  -->
     <script>
         (function (w, d, s, l, i) {
             w[l] = w[l] || []; w[l].push({
@@ -15,8 +16,26 @@
             }); var f = d.getElementsByTagName(s)[0],
                 j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
                     'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
-        })(window, document, 'script', 'dataLayer', 'GTM-WLQL39J');</script>
-    <!-- End Google Tag Manager -->
+        })(window, document, 'script', 'dataLayer', 'GTM-P3WXFWCW');
+    </script>
+    <!-- Load GTM-W8WD8WN on user interaction -->
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const events = ["mousemove", "scroll", "keydown", "touchstart"];
+            function loadGTM() {
+                events.forEach(event => document.removeEventListener(event, loadGTM));
+                (function (w, d, s, l, i) {
+                    w[l] = w[l] || []; w[l].push({
+                        'gtm.start':
+                            new Date().getTime(), event: 'gtm.js'
+                    }); var f = d.getElementsByTagName(s)[0],
+                        j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+                            'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+                })(window, document, 'script', 'dataLayer', 'GTM-W8WD8WN');
+            }
+            events.forEach(event => document.addEventListener(event, loadGTM, { once: true }));
+        });
+    </script>
     <meta charset="UTF-8" />
     <title>
         Json And Xml To Diagram Visualizer  - Syncfusion Blazor Components Showcase App
@@ -40,6 +59,16 @@
 
 <body>
     <Routes @rendermode="@InteractiveServer" />
+    <!-- Google Tag Manager (noscript) -->
+    <!--Page Load-->
+    <noscript>
+        <iframe src="https://www.googletagmanager.com/ns.html?id=GTM-P3WXFWCW" height="0" width="0" style="display:none;visibility:hidden"></iframe>
+    </noscript>
+    <!--Interaction-->
+    <noscript>
+        <iframe src="https://www.googletagmanager.com/ns.html?id=GTM-W8WD8WN" height="0" width="0" style="display:none;visibility:hidden"></iframe>
+    </noscript>
+    <!-- End Google Tag Manager (noscript) -->
     <div id="blazor-error-ui">
         <environment include="Staging,Production">
             An error has occurred. This application may no longer respond until reloaded.

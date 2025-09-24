@@ -67,7 +67,7 @@ public partial class DiagramMain
     private bool enableNodeCreating = false;
 
     private Timer? debounceTimer;
-    private readonly int debounceDelayMs = 200;
+    private readonly int debounceDelayMs = 350;
     #endregion
 
     #region Splitter
@@ -148,6 +148,7 @@ public partial class DiagramMain
 }";
 
         ThemeService.CurrentThemeSettings = new ThemeSettings("light");
+        ThemeService.SetTheme("light", ThemeService.CurrentThemeSettings);
     }
 
     private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _)
@@ -212,11 +213,9 @@ public partial class DiagramMain
             if (!XmlJSONTypeChange && !isJsonImporting)
             {
                 await UpdateAnnotationsText();
-                await diagram.EndUpdateAsync();
             }
             if (!isUpdateDiagram && (!preventRendering || initializeDiagram))
             {
-                diagram.BeginUpdate();
                 await ParseAndUpdateDiagram();
             }
             await diagram.DoLayoutAsync();
@@ -231,7 +230,8 @@ public partial class DiagramMain
         }
         catch
         {
-            showSpinner = true;   
+            showSpinner = true;
+            await diagram.RefreshDataSourceAsync();
         }
     }
 
@@ -325,7 +325,19 @@ public partial class DiagramMain
         }
     }
 
-    private async Task UpdateNodeDefaults(IDiagramObject obj)
+    private void OnPropertyChanged(PropertyChangedEventArgs args)
+    {
+        // if nodes are expanded and collapsed, Check if it's a root node (no incoming edges)
+        if (args.PropertyName == "IsExpanded" && args.Element is Node node && node.AdditionalInfo != null && node.AdditionalInfo.ContainsKey("isLeaf") && !(bool)node.AdditionalInfo["isLeaf"])
+        {
+            if (node.InEdges!.Count == 0)
+            {
+                isGraphCollapsed = !node.IsExpanded;
+            }
+        }
+    }
+
+    private async Task UpdateNodeDefaults(IDiagramObject obj, Dictionary<string, (double width, double height)> sizeDict = null)
     {
         if (obj is Node node)
         {
@@ -350,9 +362,18 @@ public partial class DiagramMain
                     && additionalInfo.TryGetValue("isLeaf", out var isLeafObj)
                     && bool.TryParse(isLeafObj?.ToString(), out bool isLeaf))
                 {
-                    var (width, height) = await GetNodeSizeAsync((string)mergedContent, isLeaf, minNodeWidth);
-                    node.Width = width;
-                    node.Height = height;
+                    (double width, double height) size;
+                    if (sizeDict != null && sizeDict.TryGetValue((string)mergedContent, out size))
+                    {
+                        node.Width = size.width;
+                        node.Height = size.height;
+                    }
+                    else
+                    {
+                        var result = await GetNodeSizeAsync((string)mergedContent, isLeaf, minNodeWidth);
+                        node.Width = result.width;
+                        node.Height = result.height;
+                    }
                 }
 
                 await PositionNodeAnnotations(node);
@@ -473,9 +494,18 @@ public partial class DiagramMain
             diagram.Clear();
             nodeBase.Clear();
 
+            // Collect all mergedContent strings for nodes
+            var allContents = diagramData.Nodes
+                .Where(n => n.AdditionalInfo != null && n.AdditionalInfo.ContainsKey("mergedContent"))
+                .Select(n => n.AdditionalInfo["mergedContent"]?.ToString() ?? "")
+                .ToList();
+
+            // Batch get all sizes
+            var sizeDict = await GetNodeSizesBatchAsync(allContents, false, minNodeWidth);
+
             foreach (var node in diagramData.Nodes)
             {
-                await UpdateNodeDefaults(node);
+                await UpdateNodeDefaults(node, sizeDict);
                 nodeBase.Add(node!);
             }
             foreach (var connector in diagramData.Connectors)
@@ -524,6 +554,14 @@ public partial class DiagramMain
 
             if (diagram.Nodes!.Count == diagramData.Nodes.Count)
             {
+                // Collect all mergedContent for nodes that need update
+                var allContents = diagramData.Nodes
+                    .Where(n => n.AdditionalInfo != null && n.AdditionalInfo.ContainsKey("mergedContent"))
+                    .Select(n => n.AdditionalInfo["mergedContent"]?.ToString() ?? "")
+                    .ToList();
+
+                var sizeDict = await GetNodeSizesBatchAsync(allContents, false, minNodeWidth);
+
                 foreach (var node in diagramData.Nodes)
                 {
                     var existingNode = diagram.Nodes.FirstOrDefault(n => n.ID == node.ID);
@@ -549,9 +587,12 @@ public partial class DiagramMain
                                         && additionalInfo.TryGetValue("isLeaf", out var isLeafObj)
                                         && bool.TryParse(isLeafObj?.ToString(), out bool isLeaf))
                                     {
-                                        var (width, height) = await GetNodeSizeAsync((string)mergedContent, isLeaf, minNodeWidth);
-                                        existingNode.Width = width;
-                                        existingNode.Height = height;
+                                        // Use sizeDict when updating node sizes
+                                        if (sizeDict.TryGetValue((string)mergedContent, out var size))
+                                        {
+                                            existingNode.Width = size.width;
+                                            existingNode.Height = size.height;
+                                        }
                                         existingNode.AdditionalInfo = additionalInfo;
                                         existingNode.Data = nodeData;
                                     }
@@ -563,6 +604,7 @@ public partial class DiagramMain
                         if (update)
                         {
                             await PositionNodeAnnotations(existingNode);
+                            break;
                         }
                     }
                     else
@@ -589,12 +631,22 @@ public partial class DiagramMain
         return (width, result["height"]);
     }
 
-    private string RemoveCountValue(string input)
+    private async Task<Dictionary<string, (double width, double height)>> GetNodeSizesBatchAsync(IEnumerable<string> contents, bool isLeaf, double minWidth)
     {
-        // Regular expression to match contents within curly braces including the braces
-        string pattern = @"\{.*?\}";
-        // Replace the matched contents with an empty string
-        return System.Text.RegularExpressions.Regex.Replace(input, pattern, "").Trim();
+        var uniqueContents = contents.Distinct().ToList();
+        var jsResults = await JS.InvokeAsync<Dictionary<string, Dictionary<string, double>>>(
+            "getTextSizesBatch", uniqueContents, "12px Consolas"
+        );
+
+        var result = new Dictionary<string, (double width, double height)>();
+        foreach (var content in uniqueContents)
+        {
+            var size = jsResults.TryGetValue(content, out var s) ? s : new Dictionary<string, double> { ["width"] = minWidth, ["height"] = 16 };
+            double iconExtra = isLeaf ? 0 : expandCollapseIconWidth;
+            double width = Math.Max(minWidth, size["width"] + iconExtra);
+            result[content] = (width, size["height"]);
+        }
+        return result;
     }
 
     private async Task PositionNodeAnnotations(Node node, bool isThemeChange = false)
@@ -672,11 +724,24 @@ public partial class DiagramMain
         double totalLines = node?.Annotations?.Count(x => x.ID.StartsWith("Key")) ?? 1;
         var spacingY = totalLines > 0 ? 1.0 / (totalLines + 1) : 0.5;
         var currentLine = 1;
-        foreach (var annotation in node!.Annotations!)
+
+        // Collect all unique annotation contents for this node
+        var annotationContents = node.Annotations
+            .Select(a => a.Content?.ToString() ?? "")
+            .Distinct()
+            .ToList();
+
+        // Batch call to JS to get all annotation text sizes at once
+        var sizes = await JS.InvokeAsync<Dictionary<string, Dictionary<string, double>>>(
+            "getTextSizesBatch", annotationContents, "12px Consolas"
+        );
+
+        foreach (var annotation in node.Annotations)
         {
-            var size = await JS.InvokeAsync<Dictionary<string, double>>("getTextSize", annotation.Content, "12px Consolas");
+            string contentStr = annotation.Content?.ToString() ?? "";
+            var size = sizes.TryGetValue(contentStr, out var s) ? s : new Dictionary<string, double> { ["width"] = 50, ["height"] = 16 };
             double contentWidth = size["width"];
-            string rawValue = annotation.Content?.ToString() ?? "";
+            string rawValue = contentStr;
 
             double offsetY = currentLine * spacingY;
 
@@ -1125,6 +1190,8 @@ public partial class DiagramMain
         // Remove existing keyboard listener
         await JS.InvokeVoidAsync("removeSearchKeyboardListener");
 
+        diagram.ResetZoom();
+
         // Reset all node styles first
         await UpdateDefaultNodeStyles();
 
@@ -1133,8 +1200,6 @@ public partial class DiagramMain
             await toolBar.UpdateSearchCounter(0, 0, false);
             return;
         }
-
-        diagram.ResetZoom();
 
         // Find matching nodes
         foreach (var node in diagram.Nodes!)
